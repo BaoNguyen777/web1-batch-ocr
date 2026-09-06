@@ -1,15 +1,31 @@
-# Web 1 - Batch OCR biển số & CCCD
+# Web 1 — Batch OCR biển số & CCCD
 
-## Chức năng
+Web app Next.js dùng để upload nhiều ảnh, gửi từng ảnh qua API proxy và nhận kết quả từ AI server.
+
+## Luồng hệ thống
+
+```text
+Browser
+  ↓ POST /api/recognize
+Next.js / Vercel
+  ↓ POST /recognize + x-api-key
+AI Server / FastAPI
+  ↓
+YOLO best.pt → detect biển số
+PaddleOCR → đọc ký tự + CCCD 12 số
+```
+
+## Tính năng
+
 - Kéo/thả nhiều ảnh.
 - Tối đa 200 ảnh/lần ở UI.
-- Chạy queue với concurrency = 3.
-- Gọi `/api/recognize` trên Vercel.
-- Route Vercel forward ảnh sang AI server thật.
-- Hiển thị/sửa biển số + CCCD.
-- Xuất CSV UTF-8 mở được trong Excel.
+- Queue concurrency = 3.
+- Hiển thị và chỉnh sửa biển số + CCCD.
+- Xuất CSV UTF-8 cho Excel.
+- API proxy giữ `AI_API_KEY` ở server, không expose key cho browser.
+- Có health check qua `/api/recognize` (GET).
 
-## Chạy local
+## Local
 
 ```bash
 npm install
@@ -17,50 +33,51 @@ copy .env.example .env.local
 npm run dev
 ```
 
-Sửa `.env.local`:
+`.env.local`:
 
 ```env
 AI_API_URL=http://127.0.0.1:8000
 AI_API_KEY=
 ```
 
-AI server phải có endpoint:
+## Vercel
+
+Không dùng `127.0.0.1` hoặc `localhost` cho `AI_API_URL` trên Vercel. Hãy dùng URL public của AI server, ví dụ:
+
+```env
+AI_API_URL=https://your-ai-server.example.com
+AI_API_KEY=your-secret
+```
+
+Sau khi thêm Environment Variables, redeploy project.
+
+## AI server contract
 
 ```http
 POST /recognize
 Content-Type: multipart/form-data
+x-api-key: your-secret
 file=<image>
 ```
 
-Một trong các JSON response sau đều được Web 1 đọc:
+Response:
 
 ```json
 {
   "licensePlate": "43A-123.45",
   "cccd": "012345678901",
-  "confidence": 0.96
+  "confidence": 0.96,
+  "plateConfidence": 0.94,
+  "cccdConfidence": 0.9,
+  "detections": []
 }
 ```
 
-hoặc:
+AI server cũng hỗ trợ `POST /recognize/batch` cho nhiều file, nhưng Web 1 hiện dùng queue từng ảnh để dễ kiểm soát lỗi và timeout.
 
-```json
-{
-  "data": {
-    "licensePlate": "43A-123.45",
-    "cccd": "012345678901",
-    "confidence": 0.96
-  }
-}
-```
+## Lưu ý production
 
-## Deploy Vercel
-
-1. Push project lên GitHub.
-2. Import repository vào Vercel.
-3. Project Settings -> Environment Variables.
-4. Thêm `AI_API_URL`.
-5. Nếu AI server dùng secret, thêm `AI_API_KEY`.
-6. Redeploy.
-
-Lưu ý: `best.pt`, YOLO và PaddleOCR nên chạy ở AI server riêng.
+- Không commit `.env`, API key hoặc dữ liệu ảnh/CCCD.
+- `best.pt` là model detect biển số; CCCD hiện được lấy bằng OCR toàn ảnh + heuristic 12 chữ số.
+- Nếu cần nhận diện CCCD chính xác hơn, nên huấn luyện detector vùng CCCD riêng.
+- Vercel chỉ đóng vai trò frontend/API proxy; YOLO + PaddleOCR nên chạy trên máy chủ Python riêng.
