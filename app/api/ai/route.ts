@@ -1,54 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const AI_API_URL = process.env.AI_API_URL;
-const AI_API_KEY = process.env.AI_API_KEY;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
+// Backward-compatible endpoint. The frontend should use /api/recognize.
 export async function GET() {
-    try {
-        const response = await fetch(`${AI_API_URL}/health`, {
-            method: "GET",
-        });
+  try {
+    const aiUrl = process.env.AI_API_URL?.trim()?.replace(/\/$/, "");
+    if (!aiUrl) throw new Error("AI_API_URL is not configured.");
 
-        const data = await response.json();
+    const response = await fetch(`${aiUrl}/health`, {
+      headers: process.env.AI_API_KEY
+        ? { "x-api-key": process.env.AI_API_KEY }
+        : undefined,
+      cache: "no-store"
+    });
 
-        return NextResponse.json(data);
-    } catch (error) {
-        return NextResponse.json(
-            {
-                success: false,
-                message: "Cannot connect to AI server",
-                error: String(error),
-            },
-            { status: 500 }
-        );
-    }
+    const data = await response.json().catch(() => null);
+    return NextResponse.json(data ?? { success: response.ok }, {
+      status: response.status
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Cannot connect to AI server."
+      },
+      { status: 503 }
+    );
+  }
 }
 
 export async function POST(request: NextRequest) {
-    try {
-        const formData = await request.formData();
-
-        const response = await fetch(`${AI_API_URL}/predict`, {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${AI_API_KEY}`,
-            },
-            body: formData,
-        });
-
-        const data = await response.json();
-
-        return NextResponse.json(data, {
-            status: response.status,
-        });
-    } catch (error) {
-        return NextResponse.json(
-            {
-                success: false,
-                message: "Cannot connect to AI server",
-                error: String(error),
-            },
-            { status: 500 }
-        );
+  try {
+    const aiUrl = process.env.AI_API_URL?.trim()?.replace(/\/$/, "");
+    if (!aiUrl) {
+      return NextResponse.json(
+        { success: false, error: "AI_API_URL chưa được cấu hình." },
+        { status: 500 }
+      );
     }
+
+    const incoming = await request.formData();
+    const file = incoming.get("file");
+    if (!(file instanceof File)) {
+      return NextResponse.json(
+        { success: false, error: "Không tìm thấy ảnh." },
+        { status: 400 }
+      );
+    }
+
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+
+    const response = await fetch(`${aiUrl}/recognize`, {
+      method: "POST",
+      headers: process.env.AI_API_KEY
+        ? { "x-api-key": process.env.AI_API_KEY }
+        : undefined,
+      body: formData,
+      cache: "no-store"
+    });
+
+    const data = await response.json().catch(() => null);
+    return NextResponse.json(data ?? { success: false }, {
+      status: response.status
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Cannot connect to AI server."
+      },
+      { status: 503 }
+    );
+  }
 }
