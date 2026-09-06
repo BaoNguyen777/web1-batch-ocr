@@ -8,16 +8,29 @@ function getAiUrl() {
   const value = process.env.AI_API_URL?.trim();
 
   if (!value) {
-    throw new Error("AI_API_URL is not configured.");
+    throw new Error("AI_API_URL is not configured on Vercel.");
   }
 
   if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(value)) {
     throw new Error(
-      "AI_API_URL points to a local address. On Vercel, use the public URL of the deployed AI server."
+      "AI_API_URL points to a local address. Use the public Railway URL."
     );
   }
 
-  return value.replace(/\/$/, "");
+  const normalized = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`Invalid AI_API_URL configuration: ${value}`);
+  }
+
+  if (!parsed.hostname) {
+    throw new Error(`Invalid AI_API_URL configuration: ${value}`);
+  }
+
+  return parsed.toString().replace(/\/$/, "");
 }
 
 function aiHeaders(): HeadersInit {
@@ -46,6 +59,8 @@ async function parsePayload(response: Response) {
 export async function GET() {
   try {
     const aiUrl = getAiUrl();
+    console.info("[AI health] target:", aiUrl);
+
     const response = await fetch(`${aiUrl}/health`, {
       method: "GET",
       headers: aiHeaders(),
@@ -63,6 +78,7 @@ export async function GET() {
     );
   } catch (error) {
     console.error("[AI health]", error);
+
     return NextResponse.json(
       {
         success: false,
@@ -96,6 +112,15 @@ export async function POST(request: Request) {
     }
 
     const aiUrl = getAiUrl();
+    const targetUrl = `${aiUrl}/recognize`;
+
+    console.info("[AI recognize] target:", targetUrl);
+    console.info("[AI recognize] file:", {
+      name: file.name,
+      type: file.type,
+      size: file.size
+    });
+
     const form = new FormData();
     form.append("file", file, file.name);
 
@@ -104,18 +129,28 @@ export async function POST(request: Request) {
 
     let response: Response;
     try {
-      response = await fetch(`${aiUrl}/recognize`, {
+      response = await fetch(targetUrl, {
         method: "POST",
         headers: aiHeaders(),
         body: form,
         cache: "no-store",
         signal: controller.signal
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[AI recognize] fetch failed:", {
+        targetUrl,
+        message,
+        name: error instanceof Error ? error.name : typeof error
+      });
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
 
     const payload = await parsePayload(response);
+
+    console.info("[AI recognize] response:", response.status);
 
     if (!response.ok) {
       return NextResponse.json(
@@ -124,11 +159,17 @@ export async function POST(request: Request) {
           error:
             (payload?.detail as string | undefined) ||
             (payload?.error as string | undefined) ||
-            `AI server trả về HTTP ${response.status}.`
+            `AI server trả về HTTP ${response.status}.`,
+          aiStatus: response.status
         },
         { status: response.status }
       );
     }
+
+    const nestedData =
+      payload?.data && typeof payload.data === "object"
+        ? (payload.data as Record<string, unknown>)
+        : undefined;
 
     return NextResponse.json({
       success: true,
@@ -136,20 +177,18 @@ export async function POST(request: Request) {
         licensePlate:
           (payload?.licensePlate as string | undefined) ??
           (payload?.license_plate as string | undefined) ??
-          ((payload?.data as Record<string, unknown> | undefined)?.licensePlate as string | undefined) ??
-          ((payload?.data as Record<string, unknown> | undefined)?.license_plate as string | undefined) ??
+          (nestedData?.licensePlate as string | undefined) ??
+          (nestedData?.license_plate as string | undefined) ??
           "",
         cccd:
           (payload?.cccd as string | undefined) ??
           (payload?.citizenId as string | undefined) ??
           (payload?.citizen_id as string | undefined) ??
-          ((payload?.data as Record<string, unknown> | undefined)?.cccd as string | undefined) ??
+          (nestedData?.cccd as string | undefined) ??
           "",
         confidence:
           Number(
-            payload?.confidence ??
-              (payload?.data as Record<string, unknown> | undefined)?.confidence ??
-              0
+            payload?.confidence ?? nestedData?.confidence ?? 0
           ) || 0
       }
     });
@@ -166,9 +205,10 @@ export async function POST(request: Request) {
           ? "AI server xử lý quá lâu. Vui lòng thử lại."
           : error instanceof Error
             ? error.message
-            : "Không thể kết nối AI server."
+            : "Không thể kết nối AI server.",
+        errorType: error instanceof Error ? error.name : typeof error
       },
-      { status: isTimeout ? 504 : 503 }
+      { status: isTimeout ? 504 : 500 }
     );
   }
 }
