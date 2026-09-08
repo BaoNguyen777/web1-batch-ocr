@@ -6,7 +6,6 @@ import {
   LoaderCircle,
   Play,
   RotateCcw,
-  Trash2,
   UploadCloud,
   X
 } from "lucide-react";
@@ -31,7 +30,6 @@ function createItem(file: File): RecognitionItem {
     file,
     preview: URL.createObjectURL(file),
     licensePlate: "",
-    cccd: "",
     confidence: 0,
     status: "pending"
   };
@@ -51,9 +49,7 @@ export default function BatchUploader() {
   const stats = useMemo(() => {
     const done = items.filter((item) => item.status === "done").length;
     const error = items.filter((item) => item.status === "error").length;
-    const processing = items.filter(
-      (item) => item.status === "processing"
-    ).length;
+    const processing = items.filter((item) => item.status === "processing").length;
 
     return {
       total: items.length,
@@ -70,10 +66,7 @@ export default function BatchUploader() {
 
     setItems((current) => {
       const remaining = Math.max(0, MAX_FILES - current.length);
-      return [
-        ...current,
-        ...images.slice(0, remaining).map(createItem)
-      ];
+      return [...current, ...images.slice(0, remaining).map(createItem)];
     });
   }
 
@@ -88,14 +81,9 @@ export default function BatchUploader() {
     addFiles(event.dataTransfer.files);
   }
 
-  function patchItem(
-    id: string,
-    patch: Partial<RecognitionItem>
-  ) {
+  function patchItem(id: string, patch: Partial<RecognitionItem>) {
     setItems((current) =>
-      current.map((item) =>
-        item.id === id ? { ...item, ...patch } : item
-      )
+      current.map((item) => (item.id === id ? { ...item, ...patch } : item))
     );
   }
 
@@ -114,29 +102,25 @@ export default function BatchUploader() {
         body: form
       });
 
-      const payload =
-        (await response.json()) as RecognizeResponse;
+      const payload = (await response.json()) as RecognizeResponse;
+      const plate = payload.data?.licensePlate?.trim().toUpperCase() || "";
 
-      if (!response.ok || !payload.success) {
-        throw new Error(
-          payload.error || "Nhận diện thất bại."
-        );
+      // A successful request without a detected plate is still a completed item.
+      // Keep the plate empty instead of showing a fake/default number.
+      if (!response.ok || (payload.success === false && !payload.data)) {
+        throw new Error(payload.error || "Nhận diện thất bại.");
       }
 
       patchItem(item.id, {
         status: "done",
-        licensePlate:
-          payload.data?.licensePlate?.trim().toUpperCase() || "",
-        cccd: payload.data?.cccd?.trim() || "",
-        confidence: payload.data?.confidence || 0
+        licensePlate: plate,
+        confidence: payload.data?.confidence || 0,
+        error: undefined
       });
     } catch (error) {
       patchItem(item.id, {
         status: "error",
-        error:
-          error instanceof Error
-            ? error.message
-            : "Có lỗi xảy ra."
+        error: error instanceof Error ? error.message : "Có lỗi xảy ra."
       });
     }
   }
@@ -145,15 +129,12 @@ export default function BatchUploader() {
     if (running) return;
 
     const queue = items.filter(
-      (item) =>
-        item.status === "pending" ||
-        item.status === "error"
+      (item) => item.status === "pending" || item.status === "error"
     );
 
     if (!queue.length) return;
 
     setRunning(true);
-
     let cursor = 0;
 
     async function worker() {
@@ -184,30 +165,18 @@ export default function BatchUploader() {
   }
 
   function clearAll() {
-    items.forEach((item) =>
-      URL.revokeObjectURL(item.preview)
-    );
+    items.forEach((item) => URL.revokeObjectURL(item.preview));
     setItems([]);
   }
 
   function exportCsv() {
     const rows = [
-      [
-        "STT",
-        "Tên ảnh",
-        "Biển số",
-        "CCCD",
-        "Độ tin cậy",
-        "Trạng thái"
-      ],
+      ["STT", "Tên ảnh", "Biển số", "Độ tin cậy", "Trạng thái"],
       ...items.map((item, index) => [
         index + 1,
         item.file.name,
         item.licensePlate,
-        item.cccd,
-        item.confidence
-          ? `${(item.confidence * 100).toFixed(2)}%`
-          : "",
+        item.confidence ? `${(item.confidence * 100).toFixed(2)}%` : "",
         item.status
       ])
     ];
@@ -215,21 +184,14 @@ export default function BatchUploader() {
     const csv =
       "\uFEFF" +
       rows
-        .map((row) =>
-          row.map((cell) => csvEscape(cell)).join(",")
-        )
+        .map((row) => row.map((cell) => csvEscape(cell)).join(","))
         .join("\r\n");
 
-    const blob = new Blob([csv], {
-      type: "text/csv;charset=utf-8"
-    });
-
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `ket-qua-bien-so-cccd-${new Date()
-      .toISOString()
-      .slice(0, 10)}.csv`;
+    anchor.download = `ket-qua-bien-so-${new Date().toISOString().slice(0, 10)}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -239,11 +201,8 @@ export default function BatchUploader() {
       <section className="hero">
         <div>
           <div className="eyebrow">WEB 1 · MANAGER</div>
-          <h1>Batch OCR biển số & CCCD</h1>
-          <p>
-            Thả nhiều ảnh, chạy AI, kiểm tra kết quả và
-            xuất CSV.
-          </p>
+          <h1>Batch OCR biển số</h1>
+          <p>Thả nhiều ảnh, chạy AI, kiểm tra kết quả và xuất CSV.</p>
         </div>
 
         <div className="hero-actions">
@@ -261,36 +220,17 @@ export default function BatchUploader() {
             onClick={runAll}
             disabled={!items.length || running}
           >
-            {running ? (
-              <LoaderCircle
-                className="spin"
-                size={18}
-              />
-            ) : (
-              <Play size={18} />
-            )}
+            {running ? <LoaderCircle className="spin" size={18} /> : <Play size={18} />}
             {running ? "Đang xử lý..." : "Chạy nhận diện"}
           </button>
         </div>
       </section>
 
       <section className="stats">
-        <div className="stat">
-          <span>Tổng ảnh</span>
-          <strong>{stats.total}</strong>
-        </div>
-        <div className="stat">
-          <span>Hoàn tất</span>
-          <strong>{stats.done}</strong>
-        </div>
-        <div className="stat">
-          <span>Đang chạy</span>
-          <strong>{stats.processing}</strong>
-        </div>
-        <div className="stat">
-          <span>Lỗi</span>
-          <strong>{stats.error}</strong>
-        </div>
+        <div className="stat"><span>Tổng ảnh</span><strong>{stats.total}</strong></div>
+        <div className="stat"><span>Hoàn tất</span><strong>{stats.done}</strong></div>
+        <div className="stat"><span>Đang chạy</span><strong>{stats.processing}</strong></div>
+        <div className="stat"><span>Lỗi</span><strong>{stats.error}</strong></div>
       </section>
 
       <section
@@ -311,16 +251,10 @@ export default function BatchUploader() {
           hidden
           onChange={onInput}
         />
-
-        <div className="drop-icon">
-          <UploadCloud size={30} />
-        </div>
-
+        <div className="drop-icon"><UploadCloud size={30} /></div>
         <div>
           <h2>Thả nhiều ảnh vào đây</h2>
-          <p>
-            hoặc bấm để chọn ảnh · tối đa {MAX_FILES} ảnh/lần
-          </p>
+          <p>hoặc bấm để chọn ảnh · tối đa {MAX_FILES} ảnh/lần</p>
         </div>
       </section>
 
@@ -329,16 +263,10 @@ export default function BatchUploader() {
           <div className="results-head">
             <div>
               <h2>Kết quả</h2>
-              <p>
-                Có thể sửa biển số và CCCD trước khi xuất file.
-              </p>
+              <p>Chỉ hiển thị biển số khi AI thực sự phát hiện được.</p>
             </div>
 
-            <button
-              className="button secondary"
-              onClick={exportCsv}
-              disabled={!items.length}
-            >
+            <button className="button secondary" onClick={exportCsv} disabled={!items.length}>
               <Download size={18} />
               Xuất CSV
             </button>
@@ -351,7 +279,6 @@ export default function BatchUploader() {
                   <th>#</th>
                   <th>Ảnh</th>
                   <th>Biển số</th>
-                  <th>CCCD</th>
                   <th>Độ tin cậy</th>
                   <th>Trạng thái</th>
                   <th />
@@ -362,62 +289,33 @@ export default function BatchUploader() {
                 {items.map((item, index) => (
                   <tr key={item.id}>
                     <td>{index + 1}</td>
-
                     <td>
                       <div className="file-cell">
-                        <img
-                          src={item.preview}
-                          alt={item.file.name}
-                        />
+                        <img src={item.preview} alt={item.file.name} />
                         <div>
                           <strong>{item.file.name}</strong>
-                          <span>
-                            {(item.file.size / 1024 / 1024).toFixed(2)} MB
-                          </span>
+                          <span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span>
                         </div>
                       </div>
                     </td>
-
                     <td>
                       <input
                         className="field"
                         value={item.licensePlate}
-                        placeholder="43A-123.45"
+                        placeholder="Không phát hiện"
                         onChange={(event) =>
                           patchItem(item.id, {
-                            licensePlate:
-                              event.target.value.toUpperCase()
+                            licensePlate: event.target.value.toUpperCase()
                           })
                         }
                       />
                     </td>
-
-                    <td>
-                      <input
-                        className="field cccd"
-                        inputMode="numeric"
-                        value={item.cccd}
-                        placeholder="012345678901"
-                        onChange={(event) =>
-                          patchItem(item.id, {
-                            cccd: event.target.value
-                              .replace(/\D/g, "")
-                              .slice(0, 12)
-                          })
-                        }
-                      />
-                    </td>
-
                     <td>
                       {item.confidence > 0
                         ? `${(item.confidence * 100).toFixed(1)}%`
                         : "—"}
                     </td>
-
-                    <td>
-                      <Status item={item} />
-                    </td>
-
+                    <td><Status item={item} /></td>
                     <td>
                       <button
                         className="icon-button"
@@ -454,14 +352,7 @@ function Status({ item }: { item: RecognitionItem }) {
   }
 
   if (item.status === "error") {
-    return (
-      <span
-        className="status error"
-        title={item.error}
-      >
-        Lỗi
-      </span>
-    );
+    return <span className="status error" title={item.error}>Lỗi</span>;
   }
 
   return <span className="status pending">Chờ</span>;
