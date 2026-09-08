@@ -43,17 +43,27 @@ async function parsePayload(response: Response) {
 export async function GET() {
   try {
     const aiUrl = getAiUrl();
-    console.info("[AI health] target:", aiUrl);
     const response = await fetch(`${aiUrl}/health`, {
       method: "GET",
       headers: aiHeaders(),
       cache: "no-store"
     });
     const payload = await parsePayload(response);
-    return NextResponse.json({ success: response.ok, ai: payload }, { status: response.ok ? 200 : response.status });
+    return NextResponse.json(
+      { success: response.ok, ai: payload },
+      { status: response.ok ? 200 : response.status }
+    );
   } catch (error) {
     console.error("[AI health]", error);
-    return NextResponse.json({ success: false, error: error instanceof Error ? error.message : "Cannot connect to AI server." }, { status: 503 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error
+          ? error.message
+          : "Cannot connect to AI server."
+      },
+      { status: 503 }
+    );
   }
 }
 
@@ -63,16 +73,21 @@ export async function POST(request: Request) {
     const file = incoming.get("file");
 
     if (!(file instanceof File)) {
-      return NextResponse.json({ success: false, error: "Không tìm thấy ảnh." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Không tìm thấy ảnh." },
+        { status: 400 }
+      );
     }
+
     if (!file.type.startsWith("image/")) {
-      return NextResponse.json({ success: false, error: "Chỉ hỗ trợ file ảnh." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Chỉ hỗ trợ file ảnh." },
+        { status: 400 }
+      );
     }
 
     const aiUrl = getAiUrl();
     const targetUrl = `${aiUrl}/recognize`;
-    console.info("[AI recognize] target:", targetUrl);
-    console.info("[AI recognize] file:", { name: file.name, type: file.type, size: file.size });
 
     const form = new FormData();
     form.append("file", file, file.name);
@@ -89,20 +104,11 @@ export async function POST(request: Request) {
         cache: "no-store",
         signal: controller.signal
       });
-    } catch (error) {
-      console.error("[AI recognize] fetch failed:", {
-        targetUrl,
-        message: error instanceof Error ? error.message : String(error),
-        name: error instanceof Error ? error.name : typeof error
-      });
-      throw error;
     } finally {
       clearTimeout(timeout);
     }
 
     const payload = await parsePayload(response);
-    console.info("[AI recognize] response:", response.status);
-    console.info("[AI recognize] response body:", payload);
 
     if (!response.ok) {
       const detail =
@@ -111,7 +117,12 @@ export async function POST(request: Request) {
         `AI server trả về HTTP ${response.status}.`;
 
       return NextResponse.json(
-        { success: false, error: detail, aiStatus: response.status, aiResponse: payload },
+        {
+          success: false,
+          error: detail,
+          aiStatus: response.status,
+          aiResponse: payload
+        },
         { status: response.status }
       );
     }
@@ -120,31 +131,42 @@ export async function POST(request: Request) {
       ? (payload.data as Record<string, unknown>)
       : undefined;
 
+    const licensePlate =
+      (payload?.licensePlate as string | null | undefined) ??
+      (payload?.license_plate as string | null | undefined) ??
+      (nestedData?.licensePlate as string | null | undefined) ??
+      (nestedData?.license_plate as string | null | undefined) ??
+      null;
+
+    const aiSuccess =
+      typeof payload?.success === "boolean"
+        ? payload.success
+        : Boolean(licensePlate);
+
     return NextResponse.json({
-      success: true,
+      success: aiSuccess,
       data: {
         licensePlate:
-          (payload?.licensePlate as string | undefined) ??
-          (payload?.license_plate as string | undefined) ??
-          (nestedData?.licensePlate as string | undefined) ??
-          (nestedData?.license_plate as string | undefined) ??
-          "",
-        cccd:
-          (payload?.cccd as string | undefined) ??
-          (payload?.citizenId as string | undefined) ??
-          (payload?.citizen_id as string | undefined) ??
-          (nestedData?.cccd as string | undefined) ??
-          "",
-        confidence: Number(payload?.confidence ?? nestedData?.confidence ?? 0) || 0
+          typeof licensePlate === "string" && licensePlate.trim()
+            ? licensePlate.trim()
+            : null,
+        confidence: Number(
+          payload?.confidence ?? nestedData?.confidence ?? 0
+        ) || 0
       }
     });
   } catch (error) {
     console.error("[AI recognize]", error);
     const isTimeout = error instanceof Error && error.name === "AbortError";
+
     return NextResponse.json(
       {
         success: false,
-        error: isTimeout ? "AI server xử lý quá lâu. Vui lòng thử lại." : error instanceof Error ? error.message : "Không thể kết nối AI server.",
+        error: isTimeout
+          ? "AI server xử lý quá lâu. Vui lòng thử lại."
+          : error instanceof Error
+            ? error.message
+            : "Không thể kết nối AI server.",
         errorType: error instanceof Error ? error.name : typeof error
       },
       { status: isTimeout ? 504 : 500 }
