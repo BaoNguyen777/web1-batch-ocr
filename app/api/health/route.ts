@@ -43,20 +43,14 @@ async function checkSupabase() {
     if (!error) error = e instanceof Error ? e.message : "Cannot connect to Supabase Storage.";
   }
 
-  return {
-    configured: true,
-    databaseStatus,
-    storageStatus,
-    bucket,
-    error,
-  };
+  return { configured: true, databaseStatus, storageStatus, bucket, error };
 }
 
 async function checkAi() {
   const value = process.env.AI_API_URL?.trim();
-  if (!value) return { configured: false, status: null, error: "AI_API_URL is missing." };
+  if (!value) return { configured: false, status: null, ok: false, error: "AI_API_URL is missing." };
 
-  const url = (/^https?:\\/\\//i.test(value) ? value : `https://${value}`).replace(/\/$/, "");
+  const url = (/^https?:\/\//i.test(value) ? value : `https://${value}`).replace(/\/$/, "");
   const apiKey = process.env.AI_API_KEY?.trim();
   const headers: HeadersInit = apiKey ? { "x-api-key": apiKey } : {};
 
