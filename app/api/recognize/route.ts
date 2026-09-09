@@ -27,7 +27,7 @@ function supabaseConfig() {
   const url = process.env.SUPABASE_URL?.trim().replace(/\/$/, "");
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "plate-images";
-  if (!url || !key) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
+  if (!url || !key) throw new Error("Supabase is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to the Web1 deployment environment.");
   return { url, key, bucket };
 }
 
@@ -44,6 +44,40 @@ function normalizePlate(value: string) {
 
 function safeFileName(name: string) {
   return name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image.jpg";
+}
+
+async function checkSupabase() {
+  const { url, bucket } = supabaseConfig();
+  const headers = supabaseHeaders();
+
+  const db = await fetch(`${url}/rest/v1/plate_records?select=id&limit=1`, { headers, cache: "no-store" });
+  if (!db.ok) {
+    const detail = await db.text();
+    throw new Error(`Supabase database check failed (${db.status}): ${detail.slice(0, 200)}`);
+  }
+
+  const storage = await fetch(`${url}/storage/v1/bucket/${encodeURIComponent(bucket)}`, { headers, cache: "no-store" });
+  if (!storage.ok) {
+    const detail = await storage.text();
+    throw new Error(`Supabase Storage check failed (${storage.status}): ${detail.slice(0, 200)}`);
+  }
+}
+
+async function verifyStorageObject(url: string, bucket: string, imagePath: string) {
+  const response = await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
+    method: "HEAD",
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+  return response.ok;
+}
+
+async function deleteStorageObject(url: string, bucket: string, imagePath: string) {
+  await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
+    method: "DELETE",
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  }).catch(() => undefined);
 }
 
 async function savePlateRecord(file: File, plate: string, confidence: number, status: string) {
@@ -65,6 +99,12 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
     throw new Error(`Image storage failed (${uploadResponse.status}): ${detail.slice(0, 300)}`);
   }
 
+  const stored = await verifyStorageObject(url, bucket, imagePath);
+  if (!stored) {
+    await deleteStorageObject(url, bucket, imagePath);
+    throw new Error("Image upload returned success, but Storage verification failed.");
+  }
+
   const record = {
     id,
     plate: normalizePlate(plate),
@@ -84,13 +124,30 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
   });
 
   if (!dbResponse.ok) {
-    await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
-      method: "DELETE",
-      headers: supabaseHeaders(),
-      cache: "no-store"
-    }).catch(() => undefined);
+    await deleteStorageObject(url, bucket, imagePath);
     const detail = await dbResponse.text();
     throw new Error(`Database save failed (${dbResponse.status}): ${detail.slice(0, 300)}`);
+  }
+
+  const verifyDb = await fetch(`${url}/rest/v1/plate_records?id=eq.${encodeURIComponent(id)}&select=id,image_path&limit=1`, {
+    headers: supabaseHeaders(),
+    cache: "no-store",
+  });
+
+  if (!verifyDb.ok) {
+    await deleteStorageObject(url, bucket, imagePath);
+    throw new Error(`Database verification failed (${verifyDb.status}).`);
+  }
+
+  const verifiedRows = await verifyDb.json().catch(() => []);
+  if (!Array.isArray(verifiedRows) || verifiedRows.length !== 1 || verifiedRows[0]?.image_path !== imagePath) {
+    await deleteStorageObject(url, bucket, imagePath);
+    await fetch(`${url}/rest/v1/plate_records?id=eq.${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: supabaseHeaders(),
+      cache: "no-store",
+    }).catch(() => undefined);
+    throw new Error("Database record was created but could not be verified.");
   }
 
   return { imagePath, recordId: id, storedAt: record.created_at };
@@ -120,6 +177,15 @@ export async function POST(request: Request) {
     const file = incoming.get("file");
     if (!(file instanceof File)) return NextResponse.json({ success: false, error: "Không tìm thấy ảnh." }, { status: 400 });
     if (!file.type.startsWith("image/")) return NextResponse.json({ success: false, error: "Chỉ hỗ trợ file ảnh." }, { status: 400 });
+
+    // Fail fast before calling AI so a broken Supabase deployment never produces a misleading result.
+    try {
+      await checkSupabase();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Supabase is unavailable.";
+      console.error("[Supabase preflight]", error);
+      return NextResponse.json({ success: false, error: message, errorType: "SUPABASE_PREFLIGHT_FAILED" }, { status: 503 });
+    }
 
     const aiUrl = getAiUrl();
     const form = new FormData();
