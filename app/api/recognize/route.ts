@@ -22,11 +22,11 @@ function getGates(values: FormDataEntryValue[]) {
 function getAiUrl() {
   const value = process.env.AI_API_URL?.trim();
   if (!value) throw new Error("AI_API_URL is not configured on Vercel.");
-  if (/localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0/i.test(value)) throw new Error("AI_API_URL points to a local address. Use the public Railway URL.");
-  const normalized = /^https?:\\/\\//i.test(value) ? value : `https://${value}`;
+  if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(value)) throw new Error("AI_API_URL points to a local address. Use the public Railway URL.");
+  const normalized = /^https?:\/\//i.test(value) ? value : `https://${value}`;
   let parsed: URL;
   try { parsed = new URL(normalized); } catch { throw new Error(`Invalid AI_API_URL configuration: ${value}`); }
-  return parsed.toString().replace(/\\/$/, "");
+  return parsed.toString().replace(/\/$/, "");
 }
 
 function aiHeaders(): HeadersInit {
@@ -37,7 +37,7 @@ function aiHeaders(): HeadersInit {
 }
 
 function supabaseConfig() {
-  const url = process.env.SUPABASE_URL?.trim().replace(/\\/$/, "");
+  const url = process.env.SUPABASE_URL?.trim().replace(/\/$/, "");
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "plate-images";
   if (!url || !key) throw new Error("Supabase is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to the Web1 deployment environment.");
@@ -52,11 +52,11 @@ function supabaseHeaders(contentType?: string): HeadersInit {
 }
 
 function normalizePlate(value: string) {
-  return value.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 function safeFileName(name: string) {
-  return name.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image.jpg";
+  return name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image.jpg";
 }
 
 function isJwtFutureError(detail: string) {
