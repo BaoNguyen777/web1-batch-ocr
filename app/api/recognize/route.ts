@@ -8,7 +8,7 @@ const GATES = [
   { code: "1A", name: "Cổng 1A" }, { code: "3", name: "Cổng 3" }, { code: "4A", name: "Cổng 4A" },
   { code: "VG1", name: "VG1" }, { code: "V2", name: "Cổng V2" }, { code: "V3", name: "Cổng V3" },
   { code: "V3A", name: "V3A" }, { code: "VG4", name: "VG4" }, { code: "V4A", name: "V4A" },
-  { code: "V5", name: "Cổng V5" }, { code: "V5A", name: "V5A" }, { code: "V5B", name: "V5B" },
+  { code: "V5", name: "Cổng V5" }, { code: "V5A", name: "Cổng V5A" }, { code: "V5B", name: "Cổng V5B" },
   { code: "V6", name: "Cổng V6" }, { code: "1D", name: "Cổng 1D" },
 ] as const;
 
@@ -20,11 +20,11 @@ function getGate(value: unknown) {
 function getAiUrl() {
   const value = process.env.AI_API_URL?.trim();
   if (!value) throw new Error("AI_API_URL is not configured on Vercel.");
-  if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(value)) throw new Error("AI_API_URL points to a local address. Use the public Railway URL.");
-  const normalized = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  if (/localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0/i.test(value)) throw new Error("AI_API_URL points to a local address. Use the public Railway URL.");
+  const normalized = /^https?:\\/\\//i.test(value) ? value : `https://${value}`;
   let parsed: URL;
   try { parsed = new URL(normalized); } catch { throw new Error(`Invalid AI_API_URL configuration: ${value}`); }
-  return parsed.toString().replace(/\/$/, "");
+  return parsed.toString().replace(/\\/$/, "");
 }
 
 function aiHeaders(): HeadersInit {
@@ -35,7 +35,7 @@ function aiHeaders(): HeadersInit {
 }
 
 function supabaseConfig() {
-  const url = process.env.SUPABASE_URL?.trim().replace(/\/$/, "");
+  const url = process.env.SUPABASE_URL?.trim().replace(/\\/$/, "");
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "plate-images";
   if (!url || !key) throw new Error("Supabase is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to the Web1 deployment environment.");
@@ -50,21 +50,42 @@ function supabaseHeaders(contentType?: string): HeadersInit {
 }
 
 function normalizePlate(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return value.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 function safeFileName(name: string) {
-  return name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image.jpg";
+  return name.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "image.jpg";
+}
+
+function isJwtFutureError(detail: string) {
+  return /PGRST303|JWT issued at future/i.test(detail);
+}
+
+async function fetchSupabaseWithRetry(url: string, init: RequestInit, attempts = 4) {
+  let lastResponse: Response | null = null;
+  const delays = [0, 1000, 2500, 5000];
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (delays[attempt] > 0) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    const response = await fetch(url, { ...init, cache: "no-store" });
+    if (response.ok) return response;
+
+    lastResponse = response;
+    const text = await response.clone().text().catch(() => "");
+    if (!isJwtFutureError(text) || attempt === attempts - 1) return response;
+  }
+
+  return lastResponse as Response;
 }
 
 async function checkSupabase() {
   const { url, bucket } = supabaseConfig();
   const headers = supabaseHeaders();
   const checks = await Promise.all([
-    fetch(`${url}/rest/v1/plate_records?select=id&limit=1`, { headers, cache: "no-store" }),
-    fetch(`${url}/rest/v1/gates?select=code&limit=1`, { headers, cache: "no-store" }),
-    fetch(`${url}/rest/v1/authorized_plates?select=plate&limit=1`, { headers, cache: "no-store" }),
-    fetch(`${url}/storage/v1/bucket/${encodeURIComponent(bucket)}`, { headers, cache: "no-store" }),
+    fetchSupabaseWithRetry(`${url}/rest/v1/plate_records?select=id&limit=1`, { headers }),
+    fetchSupabaseWithRetry(`${url}/rest/v1/gates?select=code&limit=1`, { headers }),
+    fetchSupabaseWithRetry(`${url}/rest/v1/authorized_plates?select=plate&limit=1`, { headers }),
+    fetchSupabaseWithRetry(`${url}/storage/v1/bucket/${encodeURIComponent(bucket)}`, { headers }),
   ]);
   const [db, gates, authorized, storage] = checks;
   for (const [name, response] of [["plate_records", db], ["gates", gates], ["authorized_plates", authorized], ["Storage", storage]] as const) {
@@ -76,7 +97,7 @@ async function checkSupabase() {
 }
 
 async function verifyStorageObject(url: string, bucket: string, imagePath: string) {
-  const response = await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, { method: "HEAD", headers: supabaseHeaders(), cache: "no-store" });
+  const response = await fetchSupabaseWithRetry(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, { method: "HEAD", headers: supabaseHeaders() });
   return response.ok;
 }
 
@@ -92,8 +113,8 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
   const imagePath = `${day}/${gate.code}/${normalizedPlate}_${id}_${safeFileName(file.name)}`;
   const bytes = await file.arrayBuffer();
 
-  const uploadResponse = await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
-    method: "POST", headers: { ...supabaseHeaders(file.type || "application/octet-stream"), "x-upsert": "false" }, body: bytes, cache: "no-store"
+  const uploadResponse = await fetchSupabaseWithRetry(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
+    method: "POST", headers: { ...supabaseHeaders(file.type || "application/octet-stream"), "x-upsert": "false" }, body: bytes
   });
   if (!uploadResponse.ok) {
     const detail = await uploadResponse.text();
@@ -106,8 +127,8 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
 
   const createdAt = new Date().toISOString();
   const record = { id, plate: normalizedPlate, display_plate: plate, image_name: file.name, image_path: imagePath, confidence, status, gate_code: gate.code, gate_name: gate.name, created_at: createdAt };
-  const dbResponse = await fetch(`${url}/rest/v1/plate_records`, {
-    method: "POST", headers: { ...supabaseHeaders("application/json"), Prefer: "return=minimal" }, body: JSON.stringify(record), cache: "no-store"
+  const dbResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/plate_records`, {
+    method: "POST", headers: { ...supabaseHeaders("application/json"), Prefer: "return=minimal" }, body: JSON.stringify(record)
   });
   if (!dbResponse.ok) {
     await deleteStorageObject(url, bucket, imagePath);
@@ -115,11 +136,10 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
     throw new Error(`Database save failed (${dbResponse.status}): ${detail.slice(0, 300)}`);
   }
 
-  const authResponse = await fetch(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
+  const authResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
     method: "POST",
     headers: { ...supabaseHeaders("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify({ plate: normalizedPlate, gate_code: gate.code, active: true, updated_at: createdAt }),
-    cache: "no-store"
+    body: JSON.stringify({ plate: normalizedPlate, gate_code: gate.code, active: true, updated_at: createdAt })
   });
   if (!authResponse.ok) {
     await deleteStorageObject(url, bucket, imagePath);
