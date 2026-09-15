@@ -7,14 +7,16 @@ export const maxDuration = 60;
 const GATES = [
   { code: "1A", name: "Cổng 1A" }, { code: "3", name: "Cổng 3" }, { code: "4A", name: "Cổng 4A" },
   { code: "VG1", name: "VG1" }, { code: "V2", name: "Cổng V2" }, { code: "V3", name: "Cổng V3" },
-  { code: "V3A", name: "V3A" }, { code: "VG4", name: "VG4" }, { code: "V4A", name: "V4A" },
+  { code: "V3A", name: "V3A" }, { code: "VG4", name: "VG4" }, { code: "V4A", name: "Cổng V4A" },
   { code: "V5", name: "Cổng V5" }, { code: "V5A", name: "Cổng V5A" }, { code: "V5B", name: "Cổng V5B" },
   { code: "V6", name: "Cổng V6" }, { code: "1D", name: "Cổng 1D" },
 ] as const;
 
-function getGate(value: unknown) {
-  const code = String(value ?? "").trim().toUpperCase();
-  return GATES.find((gate) => gate.code === code) ?? null;
+type Gate = (typeof GATES)[number];
+
+function getGates(values: FormDataEntryValue[]) {
+  const codes = [...new Set(values.map((value) => String(value ?? "").trim().toUpperCase()).filter(Boolean))];
+  return codes.map((code) => GATES.find((gate) => gate.code === code)).filter(Boolean) as Gate[];
 }
 
 function getAiUrl() {
@@ -64,17 +66,14 @@ function isJwtFutureError(detail: string) {
 async function fetchSupabaseWithRetry(url: string, init: RequestInit, attempts = 4) {
   let lastResponse: Response | null = null;
   const delays = [0, 1000, 2500, 5000];
-
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (delays[attempt] > 0) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
     const response = await fetch(url, { ...init, cache: "no-store" });
     if (response.ok) return response;
-
     lastResponse = response;
     const text = await response.clone().text().catch(() => "");
     if (!isJwtFutureError(text) || attempt === attempts - 1) return response;
   }
-
   return lastResponse as Response;
 }
 
@@ -105,12 +104,19 @@ async function deleteStorageObject(url: string, bucket: string, imagePath: strin
   await fetch(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, { method: "DELETE", headers: supabaseHeaders(), cache: "no-store" }).catch(() => undefined);
 }
 
-async function savePlateRecord(file: File, plate: string, confidence: number, status: string, gate: { code: string; name: string }) {
+async function deleteAuthorization(url: string, plate: string, gateCode: string) {
+  await fetch(`${url}/rest/v1/authorized_plates?plate=eq.${encodeURIComponent(plate)}&gate_code=eq.${encodeURIComponent(gateCode)}`, { method: "DELETE", headers: supabaseHeaders(), cache: "no-store" }).catch(() => undefined);
+}
+
+async function savePlateRecord(file: File, plate: string, confidence: number, status: string, gates: Gate[]) {
   const { url, bucket } = supabaseConfig();
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date());
   const id = crypto.randomUUID();
   const normalizedPlate = normalizePlate(plate);
-  const imagePath = `${day}/${gate.code}/${normalizedPlate}_${id}_${safeFileName(file.name)}`;
+  const gateCodes = gates.map((gate) => gate.code);
+  const gateNames = gates.map((gate) => gate.name);
+  const gatePath = gateCodes.join("-");
+  const imagePath = `${day}/${gatePath}/${normalizedPlate}_${id}_${safeFileName(file.name)}`;
   const bytes = await file.arrayBuffer();
 
   const uploadResponse = await fetchSupabaseWithRetry(`${url}/storage/v1/object/${encodeURIComponent(bucket)}/${imagePath}`, {
@@ -126,7 +132,10 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
   }
 
   const createdAt = new Date().toISOString();
-  const record = { id, plate: normalizedPlate, display_plate: plate, image_name: file.name, image_path: imagePath, confidence, status, gate_code: gate.code, gate_name: gate.name, created_at: createdAt };
+  const record = {
+    id, plate: normalizedPlate, display_plate: plate, image_name: file.name, image_path: imagePath,
+    confidence, status, gate_code: gateCodes.join(","), gate_name: gateNames.join(", "), created_at: createdAt
+  };
   const dbResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/plate_records`, {
     method: "POST", headers: { ...supabaseHeaders("application/json"), Prefer: "return=minimal" }, body: JSON.stringify(record)
   });
@@ -136,18 +145,28 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
     throw new Error(`Database save failed (${dbResponse.status}): ${detail.slice(0, 300)}`);
   }
 
-  const authResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
-    method: "POST",
-    headers: { ...supabaseHeaders("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify({ plate: normalizedPlate, gate_code: gate.code, active: true, updated_at: createdAt })
-  });
-  if (!authResponse.ok) {
+  const createdAuthorizations: string[] = [];
+  try {
+    for (const gate of gates) {
+      const authResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
+        method: "POST",
+        headers: { ...supabaseHeaders("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify({ plate: normalizedPlate, gate_code: gate.code, active: true, updated_at: createdAt })
+      });
+      if (!authResponse.ok) {
+        const detail = await authResponse.text();
+        throw new Error(`Authorization save failed for ${gate.name} (${authResponse.status}): ${detail.slice(0, 300)}`);
+      }
+      createdAuthorizations.push(gate.code);
+    }
+  } catch (error) {
+    for (const gateCode of createdAuthorizations) await deleteAuthorization(url, normalizedPlate, gateCode);
     await deleteStorageObject(url, bucket, imagePath);
     await fetch(`${url}/rest/v1/plate_records?id=eq.${encodeURIComponent(id)}`, { method: "DELETE", headers: supabaseHeaders(), cache: "no-store" }).catch(() => undefined);
-    const detail = await authResponse.text();
-    throw new Error(`Authorization save failed (${authResponse.status}): ${detail.slice(0, 300)}`);
+    throw error;
   }
-  return { imagePath, recordId: id, storedAt: createdAt };
+
+  return { imagePath, recordId: id, storedAt: createdAt, gates: gateCodes, gateNames };
 }
 
 async function parsePayload(response: Response) {
@@ -172,10 +191,10 @@ export async function POST(request: Request) {
   try {
     const incoming = await request.formData();
     const file = incoming.get("file");
-    const gate = getGate(incoming.get("gate"));
+    const gates = getGates(incoming.getAll("gate"));
     if (!(file instanceof File)) return NextResponse.json({ success: false, error: "Không tìm thấy ảnh." }, { status: 400 });
     if (!file.type.startsWith("image/")) return NextResponse.json({ success: false, error: "Chỉ hỗ trợ file ảnh." }, { status: 400 });
-    if (!gate) return NextResponse.json({ success: false, error: "Vui lòng chọn cổng trước khi nhận diện." }, { status: 400 });
+    if (!gates.length) return NextResponse.json({ success: false, error: "Vui lòng chọn ít nhất một cổng trước khi nhận diện." }, { status: 400 });
 
     try { await checkSupabase(); } catch (error) {
       const message = error instanceof Error ? error.message : "Supabase is unavailable.";
@@ -205,17 +224,17 @@ export async function POST(request: Request) {
     const plateConfidence = Number(nestedResult?.plateConfidence ?? payload?.plateConfidence ?? 0) || 0;
     const aiSuccess = payload?.success === true && typeof licensePlate === "string" && Boolean(licensePlate.trim());
 
-    let storage: { imagePath: string; recordId: string; storedAt: string } | null = null;
+    let storage: { imagePath: string; recordId: string; storedAt: string; gates: string[]; gateNames: string[] } | null = null;
     let storageError: string | null = null;
     if (aiSuccess && licensePlate) {
-      try { storage = await savePlateRecord(file, licensePlate, plateConfidence || confidence, "Đã nhận diện", gate); }
+      try { storage = await savePlateRecord(file, licensePlate, plateConfidence || confidence, "Đã nhận diện", gates); }
       catch (error) { storageError = error instanceof Error ? error.message : "Không thể lưu ảnh."; console.error("[plate storage]", error); }
     }
 
     return NextResponse.json({ success: aiSuccess, data: {
       licensePlate: licensePlate?.trim() || null, confidence, plateConfidence,
-      gate: gate.code, gateName: gate.name, imagePath: storage?.imagePath ?? null,
-      recordId: storage?.recordId ?? null, storedAt: storage?.storedAt ?? null, storageError
+      gates: storage?.gates ?? gates.map((gate) => gate.code), gateNames: storage?.gateNames ?? gates.map((gate) => gate.name),
+      imagePath: storage?.imagePath ?? null, recordId: storage?.recordId ?? null, storedAt: storage?.storedAt ?? null, storageError
     }});
   } catch (error) {
     console.error("[AI recognize]", error);
