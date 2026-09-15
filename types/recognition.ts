@@ -20,8 +20,8 @@ export interface RecognizeResponse {
     licensePlate?: string | null;
     confidence?: number;
     plateConfidence?: number;
-    gate?: string;
-    gateName?: string;
+    gates?: string[];
+    gateNames?: string[];
     imagePath?: string | null;
     recordId?: string | null;
     storedAt?: string | null;
