@@ -132,9 +132,12 @@ async function savePlateRecord(file: File, plate: string, confidence: number, st
   }
 
   const createdAt = new Date().toISOString();
+  // plate_records.gate_code is a foreign key to gates.code, so it must contain
+  // exactly one valid gate. All selected gates are still stored in authorized_plates.
+  const primaryGate = gates[0];
   const record = {
     id, plate: normalizedPlate, display_plate: plate, image_name: file.name, image_path: imagePath,
-    confidence, status, gate_code: gateCodes.join(","), gate_name: gateNames.join(", "), created_at: createdAt
+    confidence, status, gate_code: primaryGate.code, gate_name: primaryGate.name, created_at: createdAt
   };
   const dbResponse = await fetchSupabaseWithRetry(`${url}/rest/v1/plate_records`, {
     method: "POST", headers: { ...supabaseHeaders("application/json"), Prefer: "return=minimal" }, body: JSON.stringify(record)
