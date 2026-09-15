@@ -19,6 +19,13 @@ export interface RecognizeResponse {
   data?: {
     licensePlate?: string | null;
     confidence?: number;
+    plateConfidence?: number;
+    gate?: string;
+    gateName?: string;
+    imagePath?: string | null;
+    recordId?: string | null;
+    storedAt?: string | null;
+    storageError?: string | null;
   };
   error?: string;
 }
