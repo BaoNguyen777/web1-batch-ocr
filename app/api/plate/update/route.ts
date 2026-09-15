@@ -44,21 +44,20 @@ export async function POST(request: Request) {
     const record = rows[0];
     if (!record) return NextResponse.json({ success: false, error: "Không tìm thấy bản ghi cần cập nhật." }, { status: 404 });
 
-    const gates = (record.gate_code ?? "").split(",").map((v) => v.trim().toUpperCase()).filter((v) => GATE_CODES.has(v));
+    const gate = (record.gate_code ?? "").trim().toUpperCase();
+    const gates = gate && GATE_CODES.has(gate) ? [gate] : [];
     const oldPlate = normalizePlate(record.plate ?? "");
     const updatedAt = new Date().toISOString();
     let newImagePath = record.image_path || null;
     let copiedImage = false;
 
-    // When the plate changes, persist the same original image under the corrected plate path.
-    // This fixes the case where the DB plate is corrected but the Storage object still follows the old plate.
     if (oldPlate !== plate && record.image_path) {
       const oldImage = await fetch(storageUrl(url, bucket, record.image_path), { headers: headers(), cache: "no-store" });
       if (!oldImage.ok) throw new Error(`Không đọc được ảnh cũ trong Storage (${oldImage.status}).`);
       const imageBytes = await oldImage.arrayBuffer();
       const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date());
       const fileName = safeFileName(record.image_name || record.image_path.split("/").pop() || "image.jpg");
-      const newPath = `${day}/${gates.join("-") || "unknown"}/${plate}_${recordId}_${fileName}`;
+      const newPath = `${day}/${gate || "unknown"}/${plate}_${recordId}_${fileName}`;
       const upload = await fetch(storageUrl(url, bucket, newPath), {
         method: "POST",
         headers: { ...headers(oldImage.headers.get("content-type") || "application/octet-stream"), "x-upsert": "true" },
@@ -69,8 +68,14 @@ export async function POST(request: Request) {
       copiedImage = true;
     }
 
-    const updateBody: Record<string, unknown> = { plate, display_plate: displayPlate, confidence: 1, status: "Đã sửa thủ công" };
+    const updateBody: Record<string, unknown> = {
+      plate,
+      display_plate: displayPlate,
+      confidence: 1,
+      status: "Đã cập nhật thủ công",
+    };
     if (newImagePath) updateBody.image_path = newImagePath;
+
     const update = await fetch(`${url}/rest/v1/plate_records?id=eq.${encodeURIComponent(recordId)}`, {
       method: "PATCH", headers: { ...headers("application/json"), Prefer: "return=minimal" },
       body: JSON.stringify(updateBody), cache: "no-store",
@@ -82,17 +87,17 @@ export async function POST(request: Request) {
       throw new Error(`Cập nhật bản ghi thất bại (${update.status}): ${(await update.text()).slice(0, 250)}`);
     }
 
-    for (const gate of gates) {
+    for (const gateCode of gates) {
       const auth = await fetch(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
         method: "POST", headers: { ...headers("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify({ plate, gate_code: gate, active: true, updated_at: updatedAt }), cache: "no-store",
+        body: JSON.stringify({ plate, gate_code: gateCode, active: true, updated_at: updatedAt }), cache: "no-store",
       });
-      if (!auth.ok) throw new Error(`Không cập nhật quyền tại cổng ${gate} (${auth.status}).`);
+      if (!auth.ok) throw new Error(`Không cập nhật quyền tại cổng ${gateCode} (${auth.status}).`);
     }
 
-    if (oldPlate && oldPlate !== plate && gates.length) {
-      for (const gate of gates) {
-        await fetch(`${url}/rest/v1/authorized_plates?plate=eq.${encodeURIComponent(oldPlate)}&gate_code=eq.${encodeURIComponent(gate)}`, {
+    if (oldPlate && oldPlate !== plate) {
+      for (const gateCode of gates) {
+        await fetch(`${url}/rest/v1/authorized_plates?plate=eq.${encodeURIComponent(oldPlate)}&gate_code=eq.${encodeURIComponent(gateCode)}`, {
           method: "DELETE", headers: headers(), cache: "no-store",
         }).catch(() => undefined);
       }
@@ -102,7 +107,7 @@ export async function POST(request: Request) {
       await fetch(storageUrl(url, bucket, record.image_path), { method: "DELETE", headers: headers(), cache: "no-store" }).catch(() => undefined);
     }
 
-    return NextResponse.json({ success: true, data: { recordId, licensePlate: displayPlate, confidence: 1, imagePath: newImagePath } });
+    return NextResponse.json({ success: true, data: { recordId, licensePlate: displayPlate, confidence: 1, status: "Đã cập nhật thủ công", imagePath: newImagePath } });
   } catch (error) {
     console.error("[plate update]", error);
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : "Không thể cập nhật biển số." }, { status: 500 });
