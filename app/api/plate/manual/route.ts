@@ -85,25 +85,45 @@ export async function POST(request: Request) {
     });
     if (!upload.ok) throw new Error(`Image storage failed (${upload.status}): ${(await upload.text()).slice(0, 250)}`);
 
+    // plate_records.gate_code is a foreign key to gates.code, so it must contain ONE valid gate.
+    // Keep all selected gates in the authorization table instead.
+    const primaryGate = gates[0];
     const record = {
       id, plate, display_plate: rawPlate, image_name: file.name, image_path: path,
-      confidence: 1, status: "Nhập thủ công", gate_code: gateCodes.join(","), gate_name: gateNames.join(", "), created_at: createdAt,
+      confidence: 1, status: "Đã cập nhật thủ công", gate_code: primaryGate.code,
+      gate_name: primaryGate.name, created_at: createdAt,
     };
     const db = await sb(`${url}/rest/v1/plate_records`, {
       method: "POST", headers: { ...headers("application/json"), Prefer: "return=minimal" }, body: JSON.stringify(record),
     });
     if (!db.ok) throw new Error(`Database save failed (${db.status}): ${(await db.text()).slice(0, 250)}`);
 
-    for (const gate of gates) {
-      const auth = await sb(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
-        method: "POST",
-        headers: { ...headers("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify({ plate, gate_code: gate.code, active: true, updated_at: createdAt }),
-      });
-      if (!auth.ok) throw new Error(`Authorization save failed for ${gate.name} (${auth.status}).`);
+    try {
+      for (const gate of gates) {
+        const auth = await sb(`${url}/rest/v1/authorized_plates?on_conflict=plate%2Cgate_code`, {
+          method: "POST",
+          headers: { ...headers("application/json"), Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify({ plate, gate_code: gate.code, active: true, updated_at: createdAt }),
+        });
+        if (!auth.ok) throw new Error(`Authorization save failed for ${gate.name} (${auth.status}).`);
+      }
+    } catch (error) {
+      await sb(`${url}/rest/v1/plate_records?id=eq.${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() }).catch(() => undefined);
+      throw error;
     }
 
-    return NextResponse.json({ success: true, data: { recordId: id, imagePath: path, licensePlate: rawPlate, confidence: 1, gates: gateCodes, gateNames } });
+    return NextResponse.json({
+      success: true,
+      data: {
+        recordId: id,
+        imagePath: path,
+        licensePlate: rawPlate,
+        confidence: 1,
+        status: "Đã cập nhật thủ công",
+        gates: gateCodes,
+        gateNames,
+      },
+    });
   } catch (error) {
     if (uploadedPath) {
       try { const { url, bucket } = config(); await removeObject(url, bucket, uploadedPath); } catch { /* best effort */ }
