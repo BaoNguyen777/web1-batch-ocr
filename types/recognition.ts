@@ -11,6 +11,7 @@ export interface RecognitionItem {
   licensePlate: string;
   confidence: number;
   status: ItemStatus;
+  recordId?: string | null;
   error?: string;
 }
 
